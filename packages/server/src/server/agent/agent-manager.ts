@@ -77,7 +77,7 @@ import {
   type PendingForegroundRun,
 } from "./agent-run-state.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
-import { isSystemInjectedEnvelope } from "./agent-prompt.js";
+import { buildAgentIdentityPrompt, isSystemInjectedEnvelope } from "./agent-prompt.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import { stripInternalPaseoMcpServer, withRuntimePaseoMcpServer } from "./runtime-mcp-config.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
@@ -5089,12 +5089,22 @@ export class AgentManager {
             : null,
         mcpAuthToken: this.mcpAuthToken,
       }),
+      buildAgentIdentityPrompt({
+        agentId,
+        title: storedConfig.title,
+        cwd: storedConfig.cwd,
+      }),
     );
     return { storedConfig, launchConfig, paseoToolPolicy };
   }
 
-  private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
-    const daemonAppendSystemPrompt = this.appendSystemPrompt.trim();
+  private applyDaemonAppendSystemPrompt(
+    config: AgentSessionConfig,
+    identityPrompt?: string,
+  ): AgentSessionConfig {
+    const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), identityPrompt]
+      .filter((value) => typeof value === "string" && value.trim().length > 0)
+      .join("\n\n");
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
 

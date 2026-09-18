@@ -1346,6 +1346,21 @@ export const FetchAgentRequestMessageSchema = z.object({
   agentId: z.string(),
 });
 
+export const MessageSenderKindSchema = z.enum(["operator", "front_desk", "agent"]);
+export type MessageSenderKind = z.infer<typeof MessageSenderKindSchema>;
+
+/**
+ * Identifies who sent a prompt to an agent. Optional on the wire: when absent
+ * the receiving agent sees the prompt exactly as before (operator default).
+ * `agentId` and `label` are absent for the human operator; they identify a
+ * Front Desk or sibling agent when present.
+ */
+export const MessageSenderSchema = z.object({
+  agentId: z.string().optional(),
+  label: z.string().optional(),
+  kind: MessageSenderKindSchema,
+});
+
 export const SendAgentMessageRequestSchema = z.object({
   type: z.literal("send_agent_message_request"),
   requestId: z.string(),
@@ -1356,6 +1371,7 @@ export const SendAgentMessageRequestSchema = z.object({
   activeTurnBehavior: ActiveTurnBehaviorSchema.optional(),
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
+  sender: MessageSenderSchema.optional(),
 });
 
 export const WaitForFinishRequestSchema = z.object({
@@ -7129,6 +7145,7 @@ export type ProjectListRequestMessage = z.infer<typeof ProjectListRequestMessage
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type AgentForkContextRequestMessage = z.infer<typeof AgentForkContextRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
+export type MessageSender = z.infer<typeof MessageSenderSchema>;
 export type WaitForFinishRequest = z.infer<typeof WaitForFinishRequestSchema>;
 export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMessageSchema>;
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;

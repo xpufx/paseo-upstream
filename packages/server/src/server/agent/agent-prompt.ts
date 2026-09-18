@@ -10,7 +10,7 @@ import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
-import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type { ActiveTurnBehavior, MessageSender } from "@getpaseo/protocol/messages";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
 
@@ -32,6 +32,8 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
   /** Ask the provider to deny permissions blocking this steer. */
   clearPendingPermissions?: boolean;
+  /** Optional sender attribution prepended to the prompt before dispatch. */
+  sender?: MessageSender;
 }
 
 export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
@@ -109,21 +111,24 @@ export async function startAgentRun(
     },
     "agent.session.start_stream.request",
   );
+  const attributedPrompt = options?.sender
+    ? prependSenderAttribution(prompt, options.sender)
+    : prompt;
   // Out-of-band commands (e.g. /goal pause) must run WITHOUT canceling an
   // in-flight turn — replaceAgentRun would interrupt the running turn. The
   // intercept lives at this layer so it covers every prompt entrypoint.
-  if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
+  if (agentManager.tryRunOutOfBand(agentId, attributedPrompt, options?.runOptions)) {
     return { disposition: "out_of_band" };
   }
   try {
-    return await startAgentRunInner(agentManager, agentId, prompt, logger, options);
+    return await startAgentRunInner(agentManager, agentId, attributedPrompt, logger, options);
   } catch (error) {
     if (!isStaleProviderSessionError(error)) throw error;
     logger.info({ agentId, err: error }, "Provider session went stale; reopening from persistence");
     // The live session belongs to a retired plugin runtime. Reload swaps in a
     // fresh session on the current runtime while preserving history and labels.
     await agentManager.reloadAgentSession(agentId);
-    return await startAgentRunInner(agentManager, agentId, prompt, logger, options);
+    return await startAgentRunInner(agentManager, agentId, attributedPrompt, logger, options);
   }
 }
 
@@ -221,6 +226,54 @@ export function isSystemInjectedEnvelope(text: string): boolean {
   return SYSTEM_ENVELOPE_PATTERN.test(text);
 }
 
+export interface AgentIdentityContext {
+  agentId: string;
+  title?: string | null;
+  cwd: string;
+}
+
+/**
+ * Ambient self-identity block injected into every agent's system prompt so it
+ * can answer "who am I?" with its own id, session title, and workspace root.
+ */
+export function buildAgentIdentityPrompt(context: AgentIdentityContext): string {
+  return [
+    "<agent-environment>",
+    `agent_id: ${context.agentId}`,
+    `session_title: ${context.title ?? ""}`,
+    `workspace_root: ${context.cwd}`,
+    "</agent-environment>",
+  ].join("\n");
+}
+
+/**
+ * Render a sender envelope identifying the caller of a prompt (operator,
+ * Front Desk, or a sibling agent). Kept as a `key: value` block to match the
+ * `<agent-environment>` and `<paseo-system>` envelope conventions.
+ */
+export function formatSenderAttribution(sender: MessageSender): string {
+  const lines: string[] = [];
+  if (sender.agentId) lines.push(`agent_id: ${sender.agentId}`);
+  if (sender.label) lines.push(`label: ${sender.label}`);
+  lines.push(`kind: ${sender.kind}`);
+  return `<paseo-sender>\n${lines.join("\n")}\n</paseo-sender>`;
+}
+
+/**
+ * Prepend a sender envelope to a prompt. String prompts get the header
+ * inline; structured content blocks get a leading text block.
+ */
+export function prependSenderAttribution(
+  prompt: AgentPromptInput,
+  sender: MessageSender,
+): AgentPromptInput {
+  const header = `${formatSenderAttribution(sender)}\n\n`;
+  if (typeof prompt === "string") {
+    return `${header}${prompt}`;
+  }
+  return [{ type: "text", text: header }, ...prompt];
+}
+
 export interface SendPromptToAgentParams {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -240,6 +293,8 @@ export interface SendPromptToAgentParams {
   unarchive?: boolean;
   /** See {@link StartAgentRunOptions.clearPendingPermissions}. */
   clearPendingPermissions?: boolean;
+  /** Optional sender attribution prepended to the prompt before dispatch. */
+  sender?: MessageSender;
   logger: Logger;
 }
 
@@ -334,6 +389,7 @@ export async function sendPromptToAgent(
     replaceRunning: true,
     activeTurnBehavior: params.activeTurnBehavior,
     clearPendingPermissions: params.clearPendingPermissions,
+    sender: params.sender,
     runOptions,
   });
 }

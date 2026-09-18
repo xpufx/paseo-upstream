@@ -5,6 +5,7 @@ import type { Logger } from "pino";
 import type { AgentMode, AgentProvider, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentManager } from "../agent-manager.js";
 import { AgentProfileSchema } from "@getpaseo/protocol/messages";
+import type { MessageSender } from "@getpaseo/protocol/messages";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import {
   AgentFeatureSchema,
@@ -1889,12 +1890,22 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     }) => {
       const shouldNotifyOnFinish = Boolean(callerAgentId && notifyOnFinish && background);
 
+      const callerSnapshot = callerAgentId ? agentManager.getAgent(callerAgentId) : null;
+      const sender: MessageSender | undefined = callerAgentId
+        ? {
+            kind: "agent",
+            agentId: callerAgentId,
+            label: callerSnapshot?.config.title ?? undefined,
+          }
+        : undefined;
+
       await sendPromptToAgent({
         agentManager,
         agentStorage,
         agentId,
         prompt,
         sessionMode,
+        sender,
         logger: childLogger,
       });
 

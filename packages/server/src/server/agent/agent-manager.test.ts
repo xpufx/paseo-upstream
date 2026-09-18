@@ -18,7 +18,11 @@ import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
 import { projectTimelineRows } from "./timeline-projection.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
+import {
+  buildAgentIdentityPrompt,
+  formatSystemNotificationPrompt,
+  startAgentRun,
+} from "./agent-prompt.js";
 import { StaleProviderSessionError } from "./stale-provider-session-error.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
 import type { StoredAgentRecord } from "./agent-storage.js";
@@ -1085,6 +1089,38 @@ test("steers a tracked autonomous turn without creating a replacement run", asyn
   }
 });
 
+test("startAgentRun prepends the sender envelope to a fresh turn", async () => {
+  const session = new SteeringTestSession({ provider: "claude", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-sender-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { claude: client }, logger });
+  let agentId: string | null = null;
+
+  try {
+    const agent = await manager.createAgent({ provider: "claude", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+
+    const result = await startAgentRun(manager, agent.id, "ship it", logger, {
+      sender: { kind: "agent", agentId: "caller-1", label: "Front Desk" },
+    });
+
+    expect(result).toEqual({ disposition: "turn_started" });
+    await vi.waitFor(() => expect(session.startPrompts).toHaveLength(1));
+    expect(session.startPrompts[0]).toBe(
+      "<paseo-sender>\nagent_id: caller-1\nlabel: Front Desk\nkind: agent\n</paseo-sender>\n\nship it",
+    );
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("isolated rewind falls back from steering to the normal replacement path", async () => {
   const session = new SteeringTestSession({ provider: "claude", cwd: process.cwd() });
   session.steerResult = "unavailable";
@@ -2115,7 +2151,13 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   const record = await storage.get(snapshot.id);
 
   expect(client.createdConfigs[0]?.systemPrompt).toBe("Agent instructions.");
-  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
+    `Daemon instructions.\n\n${buildAgentIdentityPrompt({
+      agentId: "00000000-0000-4000-8000-000000000103",
+      title: undefined,
+      cwd: workdir,
+    })}`,
+  );
   expect(snapshot.config).not.toHaveProperty("daemonAppendSystemPrompt");
   expect(record?.config?.systemPrompt).toBe("Agent instructions.");
   expect(record?.config).not.toHaveProperty("daemonAppendSystemPrompt");
@@ -2149,7 +2191,13 @@ test("daemon append system prompt is injected into Pi configs", async () => {
     { workspaceId: undefined },
   );
 
-  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
+    `Daemon instructions.\n\n${buildAgentIdentityPrompt({
+      agentId: "00000000-0000-4000-8000-000000000104",
+      title: undefined,
+      cwd: workdir,
+    })}`,
+  );
 });
 
 test("setAgentMode persists the selected mode across session reload", async () => {
@@ -2722,6 +2770,11 @@ test("createAgent passes daemon launch env through the provider launch context",
     provider: "codex",
     cwd: workdir,
     model: "gpt-5.4",
+    daemonAppendSystemPrompt: buildAgentIdentityPrompt({
+      agentId: "00000000-0000-4000-8000-000000000103",
+      title: undefined,
+      cwd: workdir,
+    }),
   });
   expect(client.lastLaunchContext).toEqual({
     agentId: snapshot.id,

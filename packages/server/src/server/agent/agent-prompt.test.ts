@@ -9,8 +9,11 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import {
+  buildAgentIdentityPrompt,
+  formatSenderAttribution,
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
+  prependSenderAttribution,
   setupFinishNotification,
   waitForAgentRunStartWithTimeout,
 } from "./agent-prompt.js";
@@ -262,6 +265,56 @@ function createFinishNotificationScenario(
 test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationPrompt produces", () => {
   expect(isSystemInjectedEnvelope(formatSystemNotificationPrompt("child finished"))).toBe(true);
   expect(isSystemInjectedEnvelope("hello world")).toBe(false);
+});
+
+test("buildAgentIdentityPrompt renders the ambient self-identity block", () => {
+  expect(
+    buildAgentIdentityPrompt({
+      agentId: "agent-123",
+      title: "Release manager",
+      cwd: "/home/xpufx/projects/shipper",
+    }),
+  ).toBe(
+    [
+      "<agent-environment>",
+      "agent_id: agent-123",
+      "session_title: Release manager",
+      "workspace_root: /home/xpufx/projects/shipper",
+      "</agent-environment>",
+    ].join("\n"),
+  );
+});
+
+test("buildAgentIdentityPrompt renders an empty session_title when no title is set", () => {
+  const block = buildAgentIdentityPrompt({ agentId: "agent-123", cwd: "/tmp" });
+  expect(block).toContain("session_title: \n");
+});
+
+test("formatSenderAttribution omits absent agentId and label but always renders kind", () => {
+  expect(formatSenderAttribution({ kind: "operator" })).toBe(
+    "<paseo-sender>\nkind: operator\n</paseo-sender>",
+  );
+  expect(formatSenderAttribution({ kind: "agent", agentId: "caller", label: "Front Desk" })).toBe(
+    "<paseo-sender>\nagent_id: caller\nlabel: Front Desk\nkind: agent\n</paseo-sender>",
+  );
+});
+
+test("prependSenderAttribution prefixes string prompts and structured prompts", () => {
+  const sender = { kind: "agent" as const, agentId: "caller", label: "Front Desk" };
+
+  expect(prependSenderAttribution("hello", sender)).toBe(
+    "<paseo-sender>\nagent_id: caller\nlabel: Front Desk\nkind: agent\n</paseo-sender>\n\nhello",
+  );
+
+  expect(
+    prependSenderAttribution([{ type: "image", data: "aGk=", mimeType: "image/png" }], sender),
+  ).toEqual([
+    {
+      type: "text",
+      text: "<paseo-sender>\nagent_id: caller\nlabel: Front Desk\nkind: agent\n</paseo-sender>\n\n",
+    },
+    { type: "image", data: "aGk=", mimeType: "image/png" },
+  ]);
 });
 
 test("finish notifications tell the parent the child's last assistant message", async () => {
